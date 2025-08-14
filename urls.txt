@@ -1,1 +1,19 @@
+# WordPress文章URL配置文件
+# 
+# 支持三种格式：
+# 1. 单个URL（删除文字保留图片模式）：
+#    https://your-site.com/post/123
+#
+# 2. 目标URL|源URL（复制内容模式）：
+#    https://your-site.com/target-post|https://source-site.com/article
+#
+# 3. 目标URL|源URL|起始关键词（从指定关键词开始复制）：
+#    https://your-site.com/target-post|https://source-site.com/article|关键词
+#
+# 示例：
+
+# 删除文字保留图片模式
 https://themommyadvice.com/middle-names-for-olivia-2/
+
+# 复制内容模式（从指定关键词开始复制）
+https://themommyadvice.com/middle-names-for-olivia-2|https://minimalistmama.co/baby-names/unique-baby-boy-names|Aston

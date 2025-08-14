@@ -80,6 +80,8 @@ WORDPRESS_APP_PASSWORD=your_app_password
 
 ### 1. 更新单篇文章（试运行）
 
+python3 main.py --file urls.txt --dry-run
+
 ```bash
 python main.py --url "https://your-site.com/post/123" --dry-run
 ```

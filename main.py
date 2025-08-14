@@ -31,13 +31,19 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  # 更新单篇文章（试运行）
+  # 更新单篇文章（删除文字保留图片，试运行）
   python main.py --url "https://example.com/post/123" --dry-run
   
-  # 更新单篇文章（实际更新）
+  # 更新单篇文章（删除文字保留图片，实际更新）
   python main.py --url "https://example.com/post/123"
   
-  # 批量更新文章
+  # 复制内容模式（试运行）
+  python main.py --url "https://example.com/target-post" --source-url "https://source.com/article" --copy-mode --dry-run
+  
+  # 复制内容模式（实际更新）
+  python main.py --url "https://example.com/target-post" --source-url "https://source.com/article" --copy-mode
+  
+  # 批量处理文章（支持混合模式和关键词起始位置，根据urls.txt文件配置）
   python main.py --file urls.txt --dry-run
   
   # 获取文章信息
@@ -48,12 +54,12 @@ def main():
     # 添加参数
     parser.add_argument(
         '--url', 
-        help='要更新的文章URL'
+        help='要更新的文章URL（目标文章）'
     )
     
     parser.add_argument(
         '--file', 
-        help='包含多个URL的文件路径（每行一个URL）'
+        help='包含URL配置的文件路径（支持删除模式和复制模式的混合配置）'
     )
     
     parser.add_argument(
@@ -74,6 +80,17 @@ def main():
         help='显示详细日志'
     )
     
+    parser.add_argument(
+        '--source-url', 
+        help='源文章URL（要复制内容的来源）'
+    )
+    
+    parser.add_argument(
+        '--copy-mode', 
+        action='store_true',
+        help='复制模式：从源URL复制内容到目标文章（先清空目标文章文字内容保留图片）'
+    )
+    
     # 解析参数
     args = parser.parse_args()
     
@@ -87,6 +104,15 @@ def main():
     
     if args.url and args.file:
         parser.error("不能同时使用 --url 和 --file 参数")
+    
+    if args.copy_mode and not args.source_url:
+        parser.error("使用 --copy-mode 时必须提供 --source-url 参数")
+    
+    if args.copy_mode and args.file:
+        parser.error("复制模式不支持批量处理，请使用单个URL")
+    
+    if args.source_url and not args.copy_mode:
+        parser.error("提供 --source-url 时必须启用 --copy-mode")
     
     try:
         # 初始化文章更新器
@@ -110,8 +136,15 @@ def main():
                 else:
                     logger.error("无法获取文章信息")
                     sys.exit(1)
+            elif args.copy_mode:
+                # 复制模式：从源URL复制内容到目标文章
+                logger.info(f"复制模式：从 {args.source_url} 复制内容到 {args.url}")
+                success = updater.copy_content_from_url(args.url, args.source_url, args.dry_run)
+                if not success:
+                    logger.error("内容复制失败")
+                    sys.exit(1)
             else:
-                # 更新文章
+                # 更新文章（原有功能：删除文字保留图片）
                 success = updater.update_article_by_url(args.url, args.dry_run)
                 if not success:
                     logger.error("文章更新失败")
@@ -126,16 +159,61 @@ def main():
             
             # 读取URL列表
             with open(file_path, 'r', encoding='utf-8') as f:
-                urls = [line.strip() for line in f if line.strip()]
+                lines = [line.strip() for line in f if line.strip() and not line.startswith('#')]
             
-            if not urls:
-                logger.error("文件中没有找到有效的URL")
+            if not lines:
+                logger.error("文件中没有找到有效的URL配置")
                 sys.exit(1)
             
-            logger.info(f"从文件中读取到 {len(urls)} 个URL")
+            # 解析URL配置
+            url_configs = []
+            for line_num, line in enumerate(lines, 1):
+                if '|' in line:
+                    # 复制模式：目标URL|源URL 或 目标URL|源URL|关键词
+                    parts = line.split('|')
+                    if len(parts) == 2:
+                        target_url, source_url = parts[0].strip(), parts[1].strip()
+                        if target_url and source_url:
+                            url_configs.append({
+                                'type': 'copy',
+                                'target_url': target_url,
+                                'source_url': source_url,
+                                'start_keyword': None,
+                                'line': line_num
+                            })
+                        else:
+                            logger.warning(f"第 {line_num} 行格式不正确，跳过: {line}")
+                    elif len(parts) == 3:
+                        target_url, source_url, start_keyword = parts[0].strip(), parts[1].strip(), parts[2].strip()
+                        if target_url and source_url:
+                            url_configs.append({
+                                'type': 'copy',
+                                'target_url': target_url,
+                                'source_url': source_url,
+                                'start_keyword': start_keyword if start_keyword else None,
+                                'line': line_num
+                            })
+                        else:
+                            logger.warning(f"第 {line_num} 行格式不正确，跳过: {line}")
+                    else:
+                        logger.warning(f"第 {line_num} 行格式不正确，跳过: {line}")
+                else:
+                    # 删除模式：单个URL
+                    if line:
+                        url_configs.append({
+                            'type': 'delete',
+                            'target_url': line,
+                            'line': line_num
+                        })
             
-            # 批量更新
-            results = updater.update_multiple_articles(urls, args.dry_run)
+            if not url_configs:
+                logger.error("文件中没有找到有效的URL配置")
+                sys.exit(1)
+            
+            logger.info(f"从文件中读取到 {len(url_configs)} 个URL配置")
+            
+            # 批量处理
+            results = updater.process_multiple_configs(url_configs, args.dry_run)
             
             if results['failed'] > 0:
                 logger.warning(f"有 {results['failed']} 篇文章处理失败")
