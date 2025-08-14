@@ -278,14 +278,12 @@ class URLContentExtractor:
         """
         检查是否是新的结构化HTML格式（如minimalistmama.co）
         这种格式特征：
-        - 名字在<p><strong>名字</strong></p>中
-        - 详细信息在随后的<ul><li><span>标签</span>值</li></ul>中
+        1. 传统格式：名字在<p><strong>名字</strong></p>中，详细信息在随后的<ul><li><span>标签</span>值</li></ul>中
+        2. 新的twin names格式：使用<h2>/<h3>分类标题，<ul><li>包含名字对的列表
         """
         try:
-            # 查找<p><strong>名字</strong></p>格式的元素数量
+            # 检查传统的名字详情格式
             strong_names = soup.select('p strong')
-            
-            # 查找包含"Origin"或"Meaning"的span元素
             origin_count = 0
             meaning_count = 0
             
@@ -296,9 +294,36 @@ class URLContentExtractor:
                 elif 'Meaning' in span_text:
                     meaning_count += 1
             
-            # 如果找到多个名字和相应的详细信息，认为是结构化HTML格式
+            # 传统格式检测
             if len(strong_names) >= 3 and (origin_count >= 3 or meaning_count >= 3):
-                logger.info(f"检测到结构化HTML格式：{len(strong_names)} 个名字，{origin_count} 个起源，{meaning_count} 个含义")
+                logger.info(f"检测到传统结构化HTML格式：{len(strong_names)} 个名字，{origin_count} 个起源，{meaning_count} 个含义")
+                return True
+            
+            # 检查新的twin names格式
+            h2_headings = soup.find_all('h2')
+            h3_headings = soup.find_all('h3') 
+            ul_lists = soup.find_all('ul')
+            
+            # 检查是否包含twin names相关的标题和列表结构
+            twin_keywords = ['twin', 'match', 'rhyme', 'same letter', 'names that', 'girl names']
+            matching_headings = 0
+            
+            for heading in h2_headings + h3_headings:
+                heading_text = heading.get_text().lower()
+                if any(keyword in heading_text for keyword in twin_keywords):
+                    matching_headings += 1
+            
+            # 检查列表中是否包含名字对（通常包含 + 或 & 符号）
+            name_pairs_count = 0
+            for ul in ul_lists:
+                for li in ul.find_all('li'):
+                    li_text = li.get_text()
+                    if '+' in li_text or '&' in li_text:
+                        name_pairs_count += 1
+            
+            # 如果有相关标题和名字对列表，认为是新的twin names格式
+            if matching_headings >= 2 and name_pairs_count >= 5:
+                logger.info(f"检测到新的twin names结构化HTML格式：{matching_headings} 个相关标题，{name_pairs_count} 个名字对")
                 return True
                 
             return False
@@ -310,7 +335,102 @@ class URLContentExtractor:
     def _clean_structured_html(self, soup: BeautifulSoup) -> str:
         """
         清理结构化HTML格式，保持原有的HTML结构
+        支持两种格式：
+        1. 传统的名字详情格式
+        2. 新的twin names列表格式
         """
+        try:
+            # 检测具体的结构化格式类型
+            is_twin_names_format = self._is_twin_names_format(soup)
+            
+            if is_twin_names_format:
+                return self._clean_twin_names_html(soup)
+            else:
+                return self._clean_traditional_structured_html(soup)
+            
+        except Exception as e:
+            logger.error(f"清理结构化HTML时发生错误: {e}")
+            # 如果出错，回退到原始清理方法
+            return str(soup)
+    
+    def _is_twin_names_format(self, soup: BeautifulSoup) -> bool:
+        """检查是否是twin names格式"""
+        try:
+            # 检查是否有名字对列表结构
+            ul_lists = soup.find_all('ul')
+            name_pairs_count = 0
+            
+            for ul in ul_lists:
+                for li in ul.find_all('li'):
+                    li_text = li.get_text()
+                    if '+' in li_text or '&' in li_text:
+                        name_pairs_count += 1
+            
+            return name_pairs_count >= 5
+            
+        except Exception as e:
+            logger.error(f"检测twin names格式时发生错误: {e}")
+            return False
+    
+    def _clean_twin_names_html(self, soup: BeautifulSoup) -> str:
+        """清理twin names格式的HTML"""
+        try:
+            allowed_tags = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'br', 'strong', 'b', 'em', 'i', 'u', 'ul', 'ol', 'li', 'blockquote', 'div', 'span']
+            
+            # 递归清理函数，专门处理twin names格式
+            def clean_twin_names_element(elem):
+                if elem.name is None:  # 文本节点
+                    return str(elem).strip()
+                
+                if elem.name in allowed_tags:
+                    # 特殊处理：保留标题和列表结构
+                    cleaned_children = []
+                    for child in elem.children:
+                        cleaned_child = clean_twin_names_element(child)
+                        if cleaned_child:
+                            cleaned_children.append(cleaned_child)
+                    
+                    if cleaned_children or elem.name in ['br']:
+                        children_html = ''.join(cleaned_children)
+                        if elem.name == 'br':
+                            return '<br>'
+                        elif children_html.strip():
+                            return f"<{elem.name}>{children_html}</{elem.name}>"
+                    return ""
+                else:
+                    # 不允许的标签，提取其内容但保持子元素结构
+                    cleaned_children = []
+                    for child in elem.children:
+                        cleaned_child = clean_twin_names_element(child)
+                        if cleaned_child:
+                            cleaned_children.append(cleaned_child)
+                    return ''.join(cleaned_children)
+            
+            # 清理整个内容，保持twin names结构
+            cleaned_parts = []
+            for child in soup.children:
+                cleaned_child = clean_twin_names_element(child)
+                if cleaned_child and cleaned_child.strip():
+                    cleaned_parts.append(cleaned_child.strip())
+            
+            # 合并内容
+            cleaned_html = '\n\n'.join(cleaned_parts)
+            
+            # Twin names格式特定的清理
+            cleaned_html = re.sub(r'<p>\s*</p>', '', cleaned_html)  # 移除空段落
+            cleaned_html = re.sub(r'<li>\s*</li>', '', cleaned_html)  # 移除空列表项
+            cleaned_html = re.sub(r'<ul>\s*</ul>', '', cleaned_html)  # 移除空列表
+            cleaned_html = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned_html)  # 规范化换行
+            
+            logger.info(f"已应用twin names格式清理，内容长度: {len(cleaned_html)}")
+            return cleaned_html.strip()
+            
+        except Exception as e:
+            logger.error(f"清理twin names HTML时发生错误: {e}")
+            return str(soup)
+    
+    def _clean_traditional_structured_html(self, soup: BeautifulSoup) -> str:
+        """清理传统结构化HTML格式"""
         try:
             allowed_tags = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'br', 'strong', 'b', 'em', 'i', 'u', 'ul', 'ol', 'li', 'blockquote', 'div', 'span']
             
@@ -365,8 +485,7 @@ class URLContentExtractor:
             return cleaned_html.strip()
             
         except Exception as e:
-            logger.error(f"清理结构化HTML时发生错误: {e}")
-            # 如果出错，回退到原始清理方法
+            logger.error(f"清理传统结构化HTML时发生错误: {e}")
             return str(soup)
     
     def _format_structured_spacing(self, content: str) -> str:
@@ -830,12 +949,97 @@ class URLContentExtractor:
     def _extract_structured_from_keyword(self, soup: BeautifulSoup, keyword_element, keyword: str) -> str:
         """
         从结构化HTML中提取从关键词开始的内容，保持HTML结构
+        支持两种格式：传统格式和twin names格式
         """
+        try:
+            # 检测格式类型
+            is_twin_names_format = self._is_twin_names_format(soup)
+            
+            if is_twin_names_format:
+                return self._extract_twin_names_from_keyword(soup, keyword_element, keyword)
+            else:
+                return self._extract_traditional_from_keyword(soup, keyword_element, keyword)
+            
+        except Exception as e:
+            logger.error(f"从结构化内容提取关键词时发生错误: {e}")
+            return ""
+    
+    def _extract_twin_names_from_keyword(self, soup: BeautifulSoup, keyword_element, keyword: str) -> str:
+        """从twin names格式中提取从关键词开始的内容"""
+        try:
+            # 在twin names格式中，关键词可能在标题或列表项中
+            target_element = None
+            
+            # 首先检查是否在标题中
+            for heading in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                if keyword.lower() in heading.get_text().lower():
+                    target_element = heading
+                    logger.info(f"找到包含关键词 '{keyword}' 的标题元素: {heading.name}")
+                    break
+            
+            # 如果不在标题中，检查列表项
+            if not target_element:
+                for li in soup.find_all('li'):
+                    if keyword.lower() in li.get_text().lower():
+                        # 找到包含此列表项的ul元素
+                        target_element = li.find_parent('ul')
+                        if target_element:
+                            logger.info(f"找到包含关键词 '{keyword}' 的列表")
+                            break
+            
+            if not target_element:
+                logger.warning(f"未找到包含关键词 '{keyword}' 的twin names元素")
+                return ""
+            
+            # 获取整个文档的所有顶级元素（按顺序）
+            all_elements = []
+            for elem in soup.descendants:
+                # 收集顶级的内容元素
+                if (elem.name in ['p', 'ul', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'] and 
+                    elem.parent and elem.parent.name in ['div', 'body', '[document]', 'article', 'main', 'section']):
+                    all_elements.append(elem)
+            
+            # 找到目标元素在列表中的位置
+            start_index = -1
+            for i, elem in enumerate(all_elements):
+                if elem == target_element:
+                    start_index = i
+                    logger.info(f"找到twin names目标元素在索引 {i} 位置")
+                    break
+            
+            if start_index == -1:
+                logger.warning("无法定位twin names目标元素在文档中的位置")
+                return ""
+            
+            # 从目标元素开始收集所有后续的内容
+            collected_elements = []
+            
+            for i in range(start_index, len(all_elements)):
+                elem = all_elements[i]
+                # 保留完整的HTML结构
+                collected_elements.append(str(elem))
+            
+            # 合并所有元素
+            result_content = '\n\n'.join(collected_elements)
+            
+            # Twin names格式特定的清理
+            result_content = re.sub(r'\n\s*\n\s*\n+', '\n\n', result_content)
+            result_content = re.sub(r'<ul>\s*</ul>', '', result_content)  # 移除空列表
+            
+            logger.info(f"从twin names关键词 '{keyword}' 开始提取了 {len(result_content)} 字符的内容")
+            return result_content.strip()
+            
+        except Exception as e:
+            logger.error(f"从twin names内容提取关键词时发生错误: {e}")
+            return ""
+    
+    def _extract_traditional_from_keyword(self, soup: BeautifulSoup, keyword_element, keyword: str) -> str:
+        """从传统结构化格式中提取从关键词开始的内容"""
         try:
             # 找到包含关键词的确切元素
             target_element = None
             
-            # 在结构化格式中，关键词通常在 <p><strong>关键词</strong></p> 中
+            # 在传统结构化格式中，关键词通常在 <p><strong>关键词</strong></p> 中
             # 我们需要找到这个确切的<p>元素
             for p_elem in soup.find_all('p'):
                 strong_elem = p_elem.find('strong')
@@ -882,11 +1086,11 @@ class URLContentExtractor:
             # 轻量级清理
             result_content = re.sub(r'\n\s*\n\s*\n+', '\n\n', result_content)
             
-            logger.info(f"从结构化关键词 '{keyword}' 开始提取了 {len(result_content)} 字符的内容")
+            logger.info(f"从传统结构化关键词 '{keyword}' 开始提取了 {len(result_content)} 字符的内容")
             return result_content.strip()
             
         except Exception as e:
-            logger.error(f"从结构化内容提取关键词时发生错误: {e}")
+            logger.error(f"从传统结构化内容提取关键词时发生错误: {e}")
             return ""
 
 
