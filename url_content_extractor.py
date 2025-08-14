@@ -292,11 +292,12 @@ class URLContentExtractor:
                     if match:
                         name = match.group(1)
                         description = match.group(2).strip()
-                        # 清理描述文本
+                        # 格式化为标题+段落的形式，匹配源文章格式
                         if description:
-                            formatted_parts.append(f"<p><strong>{name}</strong> - {description}</p>")
+                            # 名字作为h3标题，描述作为段落
+                            formatted_parts.append(f"<h3>{name}</h3>\n<p>{description}</p>")
                         else:
-                            formatted_parts.append(f"<p><strong>{name}</strong></p>")
+                            formatted_parts.append(f"<h3>{name}</h3>")
                 
                 if formatted_parts:
                     return '\n\n'.join(formatted_parts)
