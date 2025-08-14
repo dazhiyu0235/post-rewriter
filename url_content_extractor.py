@@ -337,7 +337,11 @@ class URLContentExtractor:
         智能分段：根据内容特点自动分段
         """
         try:
-            # 检查是否是名字列表格式，先分离出独立的名字条目
+            # 首先检查是否是标准化的名字列表格式（包含Origin, Meaning, Popularity）
+            if self._is_structured_name_list(text):
+                return self._format_structured_name_list(text)
+            
+            # 检查是否是传统的名字列表格式，先分离出独立的名字条目
             # 按大写字母分割文本，每个大写字母开头的部分可能是一个名字条目
             parts = re.split(r'(?=[A-Z][a-z]+[A-Z])', text)
             
@@ -349,7 +353,7 @@ class URLContentExtractor:
                     name_entries.append(part)
             
             if len(name_entries) > 3:  # 如果找到多个名字条目
-                logger.info(f"检测到名字列表格式，找到 {len(name_entries)} 个条目")
+                logger.info(f"检测到传统名字列表格式，找到 {len(name_entries)} 个条目")
                 formatted_parts = []
                 for entry in name_entries:
                     # 提取名字（第一个单词）
@@ -399,6 +403,164 @@ class URLContentExtractor:
         except Exception as e:
             logger.error(f"智能分段时发生错误: {e}")
             return f"<p>{text}</p>"
+    
+    def _is_structured_name_list(self, text: str) -> bool:
+        """
+        检查是否是标准化的名字列表格式（包含Origin, Meaning, Popularity）
+        """
+        try:
+            # 检查文本中是否包含典型的名字列表特征
+            origin_count = text.count('Origin:')
+            meaning_count = text.count('Meaning:')
+            popularity_count = text.count('Popularity:')
+            
+            # 如果这些关键词都出现多次，且数量相近，则认为是标准化名字列表
+            if origin_count >= 3 and meaning_count >= 3 and popularity_count >= 3:
+                # 检查数量是否相近（允许一定的差异）
+                counts = [origin_count, meaning_count, popularity_count]
+                max_count = max(counts)
+                min_count = min(counts)
+                
+                # 如果最大值和最小值的差异不超过2，认为是结构化列表
+                if max_count - min_count <= 2:
+                    logger.info(f"检测到标准化名字列表格式: Origin={origin_count}, Meaning={meaning_count}, Popularity={popularity_count}")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"检测标准化名字列表格式时发生错误: {e}")
+            return False
+    
+    def _format_structured_name_list(self, text: str) -> str:
+        """
+        格式化标准化的名字列表（包含Origin, Meaning, Popularity）
+        """
+        try:
+            formatted_parts = []
+            
+            # 更精确的正则表达式匹配模式
+            # 匹配：名字 Origin: xxx Meaning: xxx Popularity: xxx 直到下一个名字或结束
+            name_pattern = r'([A-Z][a-z]+(?:[A-Z][a-z]+)*)\s*Origin:\s*([^M]+?)Meaning:\s*([^P]+?)Popularity:\s*([^A-Z]+?)(?=\s*[A-Z][a-z]+Origin:|$)'
+            matches = re.finditer(name_pattern, text, re.MULTILINE | re.DOTALL)
+            
+            for match in matches:
+                name = match.group(1).strip()
+                origin = match.group(2).strip()
+                meaning = match.group(3).strip()
+                popularity = match.group(4).strip()
+                
+                # 清理各字段
+                origin = re.sub(r'[^\w\s,.-]', '', origin).strip()
+                meaning = re.sub(r'[*_]', '', meaning).strip()
+                popularity = re.sub(r'[^\w\s#>]', '', popularity).strip()
+                
+                # 确保字段不为空
+                if name and origin and meaning and popularity:
+                    # 格式化每个名字为HTML结构
+                    formatted_name = f"<h3>{name}</h3>\n"
+                    formatted_name += f"<ul>\n"
+                    formatted_name += f"<li><strong>Origin:</strong> {origin}</li>\n"
+                    formatted_name += f"<li><strong>Meaning:</strong> <em>{meaning}</em></li>\n"
+                    formatted_name += f"<li><strong>Popularity:</strong> {popularity}</li>\n"
+                    formatted_name += f"</ul>"
+                    
+                    formatted_parts.append(formatted_name)
+            
+            if formatted_parts:
+                logger.info(f"成功格式化 {len(formatted_parts)} 个标准化名字条目")
+                return '\n\n'.join(formatted_parts)
+            else:
+                # 如果没有匹配到，尝试简单的分割方法
+                logger.warning("未能匹配标准格式，尝试简单分割")
+                return self._fallback_structured_format(text)
+                
+        except Exception as e:
+            logger.error(f"格式化标准化名字列表时发生错误: {e}")
+            return f"<p>{text}</p>"
+    
+    def _fallback_structured_format(self, text: str) -> str:
+        """
+        备用的标准化格式处理方法
+        """
+        try:
+            # 使用更简单的方法分割各个名字条目
+            formatted_parts = []
+            
+            # 通过"Origin:"分割文本，每个部分应该包含一个完整的名字信息
+            parts = text.split('Origin:')
+            
+            for i, part in enumerate(parts):
+                if i == 0:  # 第一部分可能只是介绍文字，跳过
+                    continue
+                    
+                part = 'Origin:' + part.strip()
+                
+                # 尝试从这部分提取名字信息
+                name_info = self._extract_name_from_part(part)
+                if name_info:
+                    formatted_name = f"<h3>{name_info['name']}</h3>\n"
+                    formatted_name += f"<ul>\n"
+                    formatted_name += f"<li><strong>Origin:</strong> {name_info['origin']}</li>\n"
+                    formatted_name += f"<li><strong>Meaning:</strong> <em>{name_info['meaning']}</em></li>\n"
+                    formatted_name += f"<li><strong>Popularity:</strong> {name_info['popularity']}</li>\n"
+                    formatted_name += f"</ul>"
+                    formatted_parts.append(formatted_name)
+            
+            if formatted_parts:
+                logger.info(f"备用方法成功格式化 {len(formatted_parts)} 个名字条目")
+                return '\n\n'.join(formatted_parts)
+            else:
+                logger.warning("备用方法也无法解析，返回原文")
+                return f"<p>{text}</p>"
+                
+        except Exception as e:
+            logger.error(f"备用格式化方法发生错误: {e}")
+            return f"<p>{text}</p>"
+    
+    def _extract_name_from_part(self, part: str) -> dict:
+        """
+        从文本片段中提取名字信息
+        """
+        try:
+            # 在前面寻找名字（Origin:之前的大写字母开头的单词）
+            name_match = re.search(r'([A-Z][a-z]+(?:[A-Z][a-z]+)*)\s*Origin:', part)
+            if not name_match:
+                return None
+                
+            name = name_match.group(1).strip()
+            
+            # 提取Origin
+            origin_match = re.search(r'Origin:\s*([^M]*?)(?=Meaning:|$)', part)
+            origin = origin_match.group(1).strip() if origin_match else ""
+            
+            # 提取Meaning  
+            meaning_match = re.search(r'Meaning:\s*([^P]*?)(?=Popularity:|$)', part)
+            meaning = meaning_match.group(1).strip() if meaning_match else ""
+            meaning = re.sub(r'[*_]', '', meaning)  # 清理斜体标记
+            
+            # 提取Popularity
+            popularity_match = re.search(r'Popularity:\s*([^A-Z]*?)(?=[A-Z][a-z]*Origin:|$)', part)
+            popularity = popularity_match.group(1).strip() if popularity_match else ""
+            
+            # 清理字段
+            origin = origin.replace('\n', ' ').strip()
+            meaning = meaning.replace('\n', ' ').strip() 
+            popularity = popularity.replace('\n', ' ').strip()
+            
+            if name and origin and meaning and popularity:
+                return {
+                    'name': name,
+                    'origin': origin,
+                    'meaning': meaning,
+                    'popularity': popularity
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f"提取名字信息时发生错误: {e}")
+            return None
     
     def extract_and_format(self, url: str, start_keyword: str = None) -> Optional[str]:
         """
