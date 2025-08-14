@@ -374,18 +374,63 @@ class ArticleUpdater:
                 hr = merged_soup.new_tag('hr')
                 container.append(hr)
             
-            # 3. 获取源内容的所有元素，准备与图片混合
+            # 3. 获取源内容的所有段落和内容块，准备与图片混合
             logger.info("添加源URL的内容并分布图片...")
             source_elements = []
-            for element in source_soup.contents:
-                if element.name or (hasattr(element, 'strip') and element.strip()):
-                    source_elements.append(element)
+            
+            # 收集更多内容单元以实现更好的图片分布
+            # 对于结构化HTML，我们需要深入到段落和列表项级别
+            def collect_content_blocks(soup):
+                """收集所有有意义的内容块（段落、列表项、标题等）"""
+                content_blocks = []
+                
+                # 查找所有有意义的内容元素
+                content_tags = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'div']
+                for element in soup.find_all(content_tags):
+                    if element.get_text(strip=True):  # 只要有文本内容的元素
+                        # 对于列表，收集其中的列表项
+                        if element.name in ['ul', 'ol']:
+                            # 对于列表，我们将整个列表作为一个单元，但也可以考虑列表项
+                            list_items = element.find_all('li')
+                            if len(list_items) > 10:  # 如果列表项很多，分段处理
+                                # 将长列表分成几个部分
+                                chunk_size = max(5, len(list_items) // 3)  # 至少5项一组，最多3组
+                                for i in range(0, len(list_items), chunk_size):
+                                    chunk_items = list_items[i:i + chunk_size]
+                                    if chunk_items:
+                                        # 创建一个新的列表容器包含这些项
+                                        new_ul = soup.new_tag('ul')
+                                        for item in chunk_items:
+                                            new_ul.append(item.extract())
+                                        content_blocks.append(new_ul)
+                            else:
+                                # 短列表直接添加
+                                content_blocks.append(element)
+                        elif element.name == 'li':
+                            # 单独的列表项，只有在不属于父列表时才添加
+                            if not element.find_parent(['ul', 'ol']):
+                                content_blocks.append(element)
+                        else:
+                            content_blocks.append(element)
+                
+                return content_blocks
+            
+            # 收集内容块
+            source_elements = collect_content_blocks(source_soup)
+            logger.info(f"收集到 {len(source_elements)} 个内容块用于图片分布")
             
             # 4. 如果有图片，计算插入位置并均匀分布
             if images_list and source_elements:
-                # 计算每隔多少个元素插入一张图片
-                interval = max(1, len(source_elements) // len(images_list))
-                logger.info(f"每隔 {interval} 个内容元素插入一张图片")
+                # 改进的图片分布算法
+                num_images = len(images_list)
+                num_blocks = len(source_elements)
+                
+                # 确保至少有合理的分布间隔
+                min_interval = max(3, num_blocks // (num_images + 1))  # 至少间隔3个内容块
+                interval = max(min_interval, num_blocks // num_images) if num_images > 0 else num_blocks
+                
+                logger.info(f"内容块总数: {num_blocks}, 图片数量: {num_images}")
+                logger.info(f"计算得出图片插入间隔: {interval} 个内容块")
                 
                 image_index = 0
                 for i, element in enumerate(source_elements):
@@ -393,20 +438,40 @@ class ArticleUpdater:
                     container.append(element)
                     
                     # 在适当位置插入图片
-                    if (image_index < len(images_list) and 
+                    # 改进分布逻辑：在1/4, 2/4, 3/4等位置插入图片
+                    should_insert_image = (
+                        image_index < num_images and 
                         (i + 1) % interval == 0 and 
-                        i < len(source_elements) - 1):  # 不在最后一个元素后插入
-                        
+                        i < num_blocks - 1 and  # 不在最后一个元素后插入
+                        i >= interval - 1  # 确保至少有一些内容后才插入图片
+                    )
+                    
+                    if should_insert_image:
                         img = images_list[image_index]
                         container.append(img)
                         image_index += 1
-                        logger.info(f"在位置 {i+1} 插入第 {image_index} 张图片")
+                        logger.info(f"在第 {i+1} 个内容块后插入第 {image_index} 张图片")
                 
-                # 如果还有剩余图片，添加到文章末尾
-                while image_index < len(images_list):
-                    container.append(images_list[image_index])
-                    image_index += 1
-                    logger.info(f"在文章末尾添加第 {image_index} 张图片")
+                # 如果还有剩余图片，在适当位置继续分布
+                remaining_images = num_images - image_index
+                if remaining_images > 0:
+                    logger.info(f"剩余 {remaining_images} 张图片需要分布")
+                    
+                    # 在剩余的内容中均匀分布剩余图片
+                    remaining_blocks = num_blocks - len([e for e in container.contents if e.name])
+                    if remaining_blocks > 0:
+                        # 在内容的后半部分分布剩余图片
+                        for i in range(remaining_images):
+                            if image_index < num_images:
+                                container.append(images_list[image_index])
+                                image_index += 1
+                                logger.info(f"在内容后段添加第 {image_index} 张图片")
+                    else:
+                        # 如果没有更多内容块，添加到末尾
+                        while image_index < num_images:
+                            container.append(images_list[image_index])
+                            image_index += 1
+                            logger.info(f"在文章末尾添加第 {image_index} 张图片")
                     
             elif source_elements:
                 # 没有图片时，只添加源内容
