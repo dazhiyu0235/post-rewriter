@@ -206,6 +206,11 @@ class URLContentExtractor:
             for elem in content_copy.select(selector):
                 elem.decompose()
         
+        # 检查是否是新的minimalistmama格式（HTML已经结构化）
+        if self._is_structured_html_format(content_copy):
+            logger.info("检测到结构化HTML格式，直接保留HTML结构")
+            return self._clean_structured_html(content_copy)
+        
         # 保留重要的HTML标签
         allowed_tags = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'br', 'strong', 'b', 'em', 'i', 'u', 'ul', 'ol', 'li', 'blockquote', 'div', 'span']
         
@@ -268,6 +273,126 @@ class URLContentExtractor:
         cleaned_html = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned_html)  # 规范化换行
         
         return cleaned_html.strip()
+    
+    def _is_structured_html_format(self, soup: BeautifulSoup) -> bool:
+        """
+        检查是否是新的结构化HTML格式（如minimalistmama.co）
+        这种格式特征：
+        - 名字在<p><strong>名字</strong></p>中
+        - 详细信息在随后的<ul><li><span>标签</span>值</li></ul>中
+        """
+        try:
+            # 查找<p><strong>名字</strong></p>格式的元素数量
+            strong_names = soup.select('p strong')
+            
+            # 查找包含"Origin"或"Meaning"的span元素
+            origin_count = 0
+            meaning_count = 0
+            
+            for span in soup.find_all('span'):
+                span_text = span.get_text().strip()
+                if 'Origin' in span_text:
+                    origin_count += 1
+                elif 'Meaning' in span_text:
+                    meaning_count += 1
+            
+            # 如果找到多个名字和相应的详细信息，认为是结构化HTML格式
+            if len(strong_names) >= 3 and (origin_count >= 3 or meaning_count >= 3):
+                logger.info(f"检测到结构化HTML格式：{len(strong_names)} 个名字，{origin_count} 个起源，{meaning_count} 个含义")
+                return True
+                
+            return False
+            
+        except Exception as e:
+            logger.error(f"检测结构化HTML格式时发生错误: {e}")
+            return False
+    
+    def _clean_structured_html(self, soup: BeautifulSoup) -> str:
+        """
+        清理结构化HTML格式，保持原有的HTML结构
+        """
+        try:
+            allowed_tags = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'br', 'strong', 'b', 'em', 'i', 'u', 'ul', 'ol', 'li', 'blockquote', 'div', 'span']
+            
+            # 递归清理函数，保留结构化内容的完整性
+            def clean_structured_element(elem):
+                if elem.name is None:  # 文本节点
+                    return str(elem).strip()
+                
+                if elem.name in allowed_tags:
+                    # 特殊处理：保留名字和详细信息的结构
+                    cleaned_children = []
+                    for child in elem.children:
+                        cleaned_child = clean_structured_element(child)
+                        if cleaned_child:
+                            cleaned_children.append(cleaned_child)
+                    
+                    if cleaned_children or elem.name in ['br']:
+                        children_html = ''.join(cleaned_children)
+                        if elem.name == 'br':
+                            return '<br>'
+                        elif children_html.strip():
+                            # 保留元素的属性（如果需要）
+                            return f"<{elem.name}>{children_html}</{elem.name}>"
+                    return ""
+                else:
+                    # 不允许的标签，提取其内容但保持子元素结构
+                    cleaned_children = []
+                    for child in elem.children:
+                        cleaned_child = clean_structured_element(child)
+                        if cleaned_child:
+                            cleaned_children.append(cleaned_child)
+                    return ''.join(cleaned_children)
+            
+            # 清理整个内容，保持结构
+            cleaned_parts = []
+            for child in soup.children:
+                cleaned_child = clean_structured_element(child)
+                if cleaned_child and cleaned_child.strip():
+                    cleaned_parts.append(cleaned_child.strip())
+            
+            # 合并内容
+            cleaned_html = '\n\n'.join(cleaned_parts)
+            
+            # 轻量级清理，不破坏结构
+            cleaned_html = re.sub(r'<p>\s*</p>', '', cleaned_html)  # 移除空段落
+            cleaned_html = re.sub(r'<li>\s*</li>', '', cleaned_html)  # 移除空列表项
+            cleaned_html = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned_html)  # 规范化换行
+            
+            # 在冒号后面添加空格，改善可读性
+            cleaned_html = self._format_structured_spacing(cleaned_html)
+            
+            return cleaned_html.strip()
+            
+        except Exception as e:
+            logger.error(f"清理结构化HTML时发生错误: {e}")
+            # 如果出错，回退到原始清理方法
+            return str(soup)
+    
+    def _format_structured_spacing(self, content: str) -> str:
+        """
+        为结构化内容添加适当的空格，改善可读性
+        """
+        try:
+            # 在span标签后面的冒号和内容之间添加空格
+            # 匹配模式: </span>直接跟着文本内容
+            # 例如: </span>English -> </span> English
+            content = re.sub(r'</span>([A-Za-z])', r'</span> \1', content)
+            
+            # 在About:, Origin:, Meaning:, Popularity: 等标签后添加空格
+            # 如果冒号后面直接跟着文字，添加空格
+            content = re.sub(r':</span>([A-Za-z])', r':</span> \1', content)
+            
+            # 处理其他可能的冒号情况
+            # 匹配 >: 后直接跟字母的情况
+            content = re.sub(r'>:([A-Za-z])', r'>: \1', content)
+            
+            logger.info("已应用结构化内容空格格式化")
+            return content
+            
+        except Exception as e:
+            logger.error(f"格式化结构化内容空格时发生错误: {e}")
+            return content
     
     def _truncate_content(self, content: str) -> str:
         """
@@ -612,6 +737,9 @@ class URLContentExtractor:
             # 解析HTML内容
             soup = BeautifulSoup(content, 'html.parser')
             
+            # 检查是否是结构化HTML格式
+            is_structured = self._is_structured_html_format(soup)
+            
             # 查找包含关键词的元素
             keyword_element = None
             
@@ -626,6 +754,10 @@ class URLContentExtractor:
             if not keyword_element:
                 logger.warning(f"未找到关键词 '{keyword}'")
                 return ""
+            
+            if is_structured:
+                # 对于结构化HTML，从关键词元素开始收集结构化内容
+                return self._extract_structured_from_keyword(soup, keyword_element, keyword)
             
             # 获取关键词元素的父容器
             container = keyword_element.parent
@@ -693,6 +825,68 @@ class URLContentExtractor:
             
         except Exception as e:
             logger.error(f"从关键词提取内容时发生错误: {e}")
+            return ""
+    
+    def _extract_structured_from_keyword(self, soup: BeautifulSoup, keyword_element, keyword: str) -> str:
+        """
+        从结构化HTML中提取从关键词开始的内容，保持HTML结构
+        """
+        try:
+            # 找到包含关键词的确切元素
+            target_element = None
+            
+            # 在结构化格式中，关键词通常在 <p><strong>关键词</strong></p> 中
+            # 我们需要找到这个确切的<p>元素
+            for p_elem in soup.find_all('p'):
+                strong_elem = p_elem.find('strong')
+                if strong_elem and keyword in strong_elem.get_text():
+                    target_element = p_elem
+                    logger.info(f"找到包含关键词 '{keyword}' 的名字元素: <p><strong>{keyword}</strong></p>")
+                    break
+            
+            if not target_element:
+                logger.warning(f"未找到包含关键词 '{keyword}' 的名字元素")
+                return ""
+            
+            # 获取整个文档的所有顶级元素（按顺序）
+            all_elements = []
+            for elem in soup.descendants:
+                # 只收集顶级的内容元素，避免重复
+                if (elem.name in ['p', 'ul', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'] and 
+                    elem.parent and elem.parent.name in ['div', 'body', '[document]']):
+                    all_elements.append(elem)
+            
+            # 找到目标元素在列表中的位置
+            start_index = -1
+            for i, elem in enumerate(all_elements):
+                if elem == target_element:
+                    start_index = i
+                    logger.info(f"找到目标元素在索引 {i} 位置")
+                    break
+            
+            if start_index == -1:
+                logger.warning("无法定位目标元素在文档中的位置")
+                return ""
+            
+            # 从目标元素开始收集所有后续的结构化内容
+            collected_elements = []
+            
+            for i in range(start_index, len(all_elements)):
+                elem = all_elements[i]
+                # 保留完整的HTML结构
+                collected_elements.append(str(elem))
+            
+            # 合并所有元素
+            result_content = '\n\n'.join(collected_elements)
+            
+            # 轻量级清理
+            result_content = re.sub(r'\n\s*\n\s*\n+', '\n\n', result_content)
+            
+            logger.info(f"从结构化关键词 '{keyword}' 开始提取了 {len(result_content)} 字符的内容")
+            return result_content.strip()
+            
+        except Exception as e:
+            logger.error(f"从结构化内容提取关键词时发生错误: {e}")
             return ""
 
 
