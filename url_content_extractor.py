@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 import logging
 from typing import Optional, Dict, Any
 import time
+from config import Config
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -26,6 +27,7 @@ class URLContentExtractor:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         })
+        self.config = Config()
         
         # 常见的内容选择器
         self.content_selectors = [
@@ -267,6 +269,69 @@ class URLContentExtractor:
         
         return cleaned_html.strip()
     
+    def _truncate_content(self, content: str) -> str:
+        """
+        根据配置的关键词截断内容
+        
+        Args:
+            content: 原始内容
+            
+        Returns:
+            截断后的内容
+        """
+        try:
+            # 检查是否包含截断关键词
+            truncation_keywords = self.config.TRUNCATION_KEYWORDS
+            
+            for keyword in truncation_keywords:
+                # 不区分大小写地查找关键词
+                keyword_lower = keyword.lower()
+                content_lower = content.lower()
+                
+                # 查找关键词位置
+                keyword_pos = content_lower.find(keyword_lower)
+                if keyword_pos != -1:
+                    logger.info(f"找到截断关键词 '{keyword}' 在位置 {keyword_pos}")
+                    
+                    # 截断内容到关键词之前
+                    truncated_content = content[:keyword_pos].strip()
+                    
+                    # 确保截断后的内容以完整的HTML标签结束
+                    truncated_content = self._clean_truncated_html(truncated_content)
+                    
+                    logger.info(f"内容已截断：从 {len(content)} 字符减少到 {len(truncated_content)} 字符")
+                    return truncated_content
+            
+            # 如果没有找到截断关键词，返回原内容
+            return content
+            
+        except Exception as e:
+            logger.error(f"截断内容时发生错误: {e}")
+            return content
+    
+    def _clean_truncated_html(self, content: str) -> str:
+        """
+        清理截断后的HTML内容，确保标签完整
+        
+        Args:
+            content: 截断后的内容
+            
+        Returns:
+            清理后的内容
+        """
+        try:
+            from bs4 import BeautifulSoup
+            
+            # 解析HTML并自动修复不完整的标签
+            soup = BeautifulSoup(content, 'html.parser')
+            
+            # 返回修复后的HTML
+            return str(soup)
+            
+        except Exception as e:
+            logger.error(f"清理截断HTML时发生错误: {e}")
+            return content
+    
     def _smart_paragraph_split(self, text: str) -> str:
         """
         智能分段：根据内容特点自动分段
@@ -359,12 +424,13 @@ class URLContentExtractor:
                 logger.warning(f"未找到关键词 '{start_keyword}'，使用完整内容")
                 content = result['content']
         
+        # 应用内容截断（移除尾部不需要的部分）
+        content = self._truncate_content(content)
+        
         # 不添加源URL的标题，直接使用内容
         formatted_content = content
         
-        # 添加来源信息
-        formatted_content += f"\n\n<p><em>原文来源: <a href=\"{url}\" target=\"_blank\">{result['domain']}</a></em></p>"
-        
+        # 不添加来源信息，直接返回内容
         return formatted_content
     
     def _extract_from_keyword(self, content: str, keyword: str) -> str:

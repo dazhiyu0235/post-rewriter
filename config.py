@@ -16,6 +16,31 @@ class Config:
     API_TIMEOUT = 30
     MAX_RETRIES = 3
     
+    # 内容提取配置
+    # 截断关键词：遇到这些关键词时停止复制后续内容
+    TRUNCATION_KEYWORDS = [
+        'Wrapping Up',
+        'Read Next',
+        'Conclusion',
+        'Final Thoughts',
+        'In Summary',
+        'To Conclude',
+        'Bottom Line',
+        'Related Posts',
+        'More Reading',
+        'Further Reading',
+        'Check Out',
+        'Don\'t Miss',
+        'Popular Posts',
+        'Recent Posts',
+        'About the Author',
+        'Author Bio',
+        'Comments',
+        'Leave a Reply',
+        'Share this',
+        'Follow us'
+    ]
+    
     @classmethod
     def validate_config(cls):
         """验证配置是否完整"""

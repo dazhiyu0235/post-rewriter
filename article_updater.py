@@ -342,7 +342,7 @@ class ArticleUpdater:
         logger.info(f"文字变化: {len(final_text) - len(original_text)} 字符")
     
     def _merge_content_with_description(self, target_description_content, source_content, target_images_content):
-        """合并目标文章描述、源内容和图片"""
+        """合并目标文章描述、源内容和图片，图片均匀分布在内容中"""
         try:
             from bs4 import BeautifulSoup
             
@@ -352,11 +352,18 @@ class ArticleUpdater:
             # 解析源内容
             source_soup = BeautifulSoup(source_content, 'html.parser')
             
+            # 解析图片内容
+            images_list = []
+            if target_images_content.strip():
+                images_soup = BeautifulSoup(target_images_content, 'html.parser')
+                images_list = images_soup.find_all('img')
+                logger.info(f"准备分布 {len(images_list)} 张图片")
+            
             # 创建新的容器
             merged_soup = BeautifulSoup('<div></div>', 'html.parser')
             container = merged_soup.div
             
-            # 1. 首先添加目标文章的描述内容（去掉图片后的文字内容）
+            # 1. 首先添加目标文章的描述内容
             logger.info("添加目标文章的描述内容...")
             for element in target_soup.contents:
                 if element.name or (hasattr(element, 'strip') and element.strip()):
@@ -367,28 +374,44 @@ class ArticleUpdater:
                 hr = merged_soup.new_tag('hr')
                 container.append(hr)
             
-            # 3. 然后添加从源URL提取的内容
-            logger.info("添加源URL的内容...")
+            # 3. 获取源内容的所有元素，准备与图片混合
+            logger.info("添加源URL的内容并分布图片...")
+            source_elements = []
             for element in source_soup.contents:
                 if element.name or (hasattr(element, 'strip') and element.strip()):
-                    container.append(element)
+                    source_elements.append(element)
             
-            # 4. 最后添加目标文章的图片（如果有的话）
-            if target_images_content.strip():
-                logger.info("添加目标文章的图片...")
-                # 添加分隔符
-                hr = merged_soup.new_tag('hr')
-                container.append(hr)
+            # 4. 如果有图片，计算插入位置并均匀分布
+            if images_list and source_elements:
+                # 计算每隔多少个元素插入一张图片
+                interval = max(1, len(source_elements) // len(images_list))
+                logger.info(f"每隔 {interval} 个内容元素插入一张图片")
                 
-                # 添加图片说明
-                img_header = merged_soup.new_tag('h3')
-                img_header.string = "相关图片"
-                container.append(img_header)
+                image_index = 0
+                for i, element in enumerate(source_elements):
+                    # 添加源内容元素
+                    container.append(element)
+                    
+                    # 在适当位置插入图片
+                    if (image_index < len(images_list) and 
+                        (i + 1) % interval == 0 and 
+                        i < len(source_elements) - 1):  # 不在最后一个元素后插入
+                        
+                        img = images_list[image_index]
+                        container.append(img)
+                        image_index += 1
+                        logger.info(f"在位置 {i+1} 插入第 {image_index} 张图片")
                 
-                # 解析图片HTML并添加
-                images_soup = BeautifulSoup(target_images_content, 'html.parser')
-                for img in images_soup.find_all('img'):
-                    container.append(img)
+                # 如果还有剩余图片，添加到文章末尾
+                while image_index < len(images_list):
+                    container.append(images_list[image_index])
+                    image_index += 1
+                    logger.info(f"在文章末尾添加第 {image_index} 张图片")
+                    
+            elif source_elements:
+                # 没有图片时，只添加源内容
+                for element in source_elements:
+                    container.append(element)
             
             result = str(container).replace('<div>', '').replace('</div>', '')
             logger.info(f"内容合并完成，最终长度: {len(result)} 字符")
@@ -397,8 +420,8 @@ class ArticleUpdater:
             
         except Exception as e:
             logger.error(f"合并内容时发生错误: {e}")
-            # 如果合并失败，返回源内容 + 图片
-            return source_content + '\n\n' + target_images_content
+            # 如果合并失败，返回描述 + 源内容 + 图片
+            return target_description_content + '\n\n' + source_content + '\n\n' + target_images_content
     
     def _show_copy_preview_with_description(self, original_content, final_content, source_url):
         """显示保留描述的复制内容预览信息"""
