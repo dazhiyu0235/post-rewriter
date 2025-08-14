@@ -150,3 +150,117 @@ class ContentProcessor:
         except Exception as e:
             logger.error(f"验证图片时发生错误: {e}")
             return {'total': 0, 'valid': 0, 'invalid': 0, 'valid_images': [], 'invalid_images': []}
+    
+    def extract_text_and_images_separately(self, html_content):
+        """
+        分别提取文字内容和图片内容
+        
+        Returns:
+            dict: {'text_content': str, 'images_content': str}
+        """
+        try:
+            # 解析HTML
+            self.soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 提取所有图片
+            images = self.soup.find_all('img')
+            images_html = []
+            for img in images:
+                images_html.append(str(img))
+            
+            # 创建一个副本用于提取文字
+            text_soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 从文字版本中移除所有图片
+            for img in text_soup.find_all('img'):
+                img.decompose()
+            
+            # 移除其他媒体元素
+            for tag in text_soup.find_all(['figure', 'picture', 'source']):
+                tag.decompose()
+            
+            # 获取纯文字内容
+            text_content = str(text_soup)
+            
+            # 获取图片内容
+            images_content = '\n'.join(images_html) if images_html else ''
+            
+            logger.info(f"分离提取: 文字长度={len(text_content)}, 图片数量={len(images)}")
+            
+            return {
+                'text_content': text_content,
+                'images_content': images_content
+            }
+            
+        except Exception as e:
+            logger.error(f"分离提取内容时发生错误: {e}")
+            return {'text_content': html_content, 'images_content': ''}
+    
+    def extract_description_and_images_only(self, html_content, max_description_paragraphs=2):
+        """
+        只提取文章描述部分和图片，清空其他内容
+        
+        Args:
+            html_content: HTML内容
+            max_description_paragraphs: 保留的描述段落数量（默认前2段）
+            
+        Returns:
+            dict: {'description_content': str, 'images_content': str}
+        """
+        try:
+            # 解析HTML
+            soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 提取所有图片
+            images = soup.find_all('img')
+            images_html = []
+            for img in images:
+                images_html.append(str(img))
+            
+            # 创建一个副本用于提取描述
+            desc_soup = BeautifulSoup(html_content, 'html.parser')
+            
+            # 移除所有图片和媒体元素
+            for img in desc_soup.find_all('img'):
+                img.decompose()
+            for tag in desc_soup.find_all(['figure', 'picture', 'source']):
+                tag.decompose()
+            
+            # 查找文章的前几个段落作为描述
+            paragraphs = desc_soup.find_all('p')
+            description_paragraphs = []
+            
+            # 只保留前几个有实质内容的段落
+            for p in paragraphs[:max_description_paragraphs * 2]:  # 多取一些以防有空段落
+                text = p.get_text(strip=True)
+                if text and len(text) > 20:  # 过滤掉太短的段落
+                    description_paragraphs.append(str(p))
+                    if len(description_paragraphs) >= max_description_paragraphs:
+                        break
+            
+            # 如果没找到足够的段落，尝试其他方法
+            if not description_paragraphs:
+                # 查找其他可能的描述元素
+                for tag in desc_soup.find_all(['div', 'section']):
+                    text = tag.get_text(strip=True)
+                    if 50 <= len(text) <= 500:  # 描述长度在合理范围内
+                        description_paragraphs.append(str(tag))
+                        break
+            
+            # 合并描述内容
+            description_content = '\n\n'.join(description_paragraphs) if description_paragraphs else ''
+            
+            # 获取图片内容
+            images_content = '\n'.join(images_html) if images_html else ''
+            
+            logger.info(f"提取描述和图片: 描述长度={len(description_content)}, 图片数量={len(images)}")
+            logger.info(f"保留的描述段落数: {len(description_paragraphs)}")
+            
+            return {
+                'description_content': description_content,
+                'images_content': images_content
+            }
+            
+        except Exception as e:
+            logger.error(f"提取描述和图片时发生错误: {e}")
+            return {'description_content': '', 'images_content': ''}

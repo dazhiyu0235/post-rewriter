@@ -217,9 +217,11 @@ class ArticleUpdater:
                 logger.warning(f"目标文章内容为空: {target_post_url}")
                 # 继续执行，因为可能只是要添加新内容
             
-            # 3. 处理目标文章内容（删除文字保留图片）
-            logger.info("正在清空目标文章的文字内容...")
-            processed_content = self.content_processor.process_content(original_content)
+            # 3. 只保留目标文章的描述部分和图片，清空其他内容
+            logger.info("正在提取目标文章的描述和图片，清空主要内容...")
+            separated_content = self.content_processor.extract_description_and_images_only(original_content)
+            target_description_content = separated_content['description_content']
+            target_images_content = separated_content['images_content']
             
             # 4. 从源URL提取内容
             if start_keyword:
@@ -232,9 +234,9 @@ class ArticleUpdater:
                 logger.error(f"无法从源URL提取内容: {source_url}")
                 return False
             
-            # 5. 合并内容（图片 + 新文字内容）
+            # 5. 合并内容（目标文章描述 + 源内容 + 图片）
             logger.info("正在合并内容...")
-            final_content = self._merge_content(processed_content, source_content)
+            final_content = self._merge_content_with_description(target_description_content, source_content, target_images_content)
             
             # 验证处理结果
             validation_result = self.content_processor.validate_images(final_content)
@@ -243,7 +245,7 @@ class ArticleUpdater:
             # 如果是试运行模式，只显示结果不更新
             if dry_run:
                 logger.info("试运行模式 - 不会实际更新文章")
-                self._show_copy_preview(original_content, final_content, source_url)
+                self._show_copy_preview_with_description(original_content, final_content, source_url)
                 return True
             
             # 6. 获取文章ID并更新
@@ -338,6 +340,95 @@ class ArticleUpdater:
         logger.info(f"原始文字长度: {len(original_text)} 字符")
         logger.info(f"最终文字长度: {len(final_text)} 字符")
         logger.info(f"文字变化: {len(final_text) - len(original_text)} 字符")
+    
+    def _merge_content_with_description(self, target_description_content, source_content, target_images_content):
+        """合并目标文章描述、源内容和图片"""
+        try:
+            from bs4 import BeautifulSoup
+            
+            # 解析目标文章的描述内容
+            target_soup = BeautifulSoup(target_description_content, 'html.parser')
+            
+            # 解析源内容
+            source_soup = BeautifulSoup(source_content, 'html.parser')
+            
+            # 创建新的容器
+            merged_soup = BeautifulSoup('<div></div>', 'html.parser')
+            container = merged_soup.div
+            
+            # 1. 首先添加目标文章的描述内容（去掉图片后的文字内容）
+            logger.info("添加目标文章的描述内容...")
+            for element in target_soup.contents:
+                if element.name or (hasattr(element, 'strip') and element.strip()):
+                    container.append(element)
+            
+            # 2. 添加分隔符
+            if target_description_content.strip():
+                hr = merged_soup.new_tag('hr')
+                container.append(hr)
+            
+            # 3. 然后添加从源URL提取的内容
+            logger.info("添加源URL的内容...")
+            for element in source_soup.contents:
+                if element.name or (hasattr(element, 'strip') and element.strip()):
+                    container.append(element)
+            
+            # 4. 最后添加目标文章的图片（如果有的话）
+            if target_images_content.strip():
+                logger.info("添加目标文章的图片...")
+                # 添加分隔符
+                hr = merged_soup.new_tag('hr')
+                container.append(hr)
+                
+                # 添加图片说明
+                img_header = merged_soup.new_tag('h3')
+                img_header.string = "相关图片"
+                container.append(img_header)
+                
+                # 解析图片HTML并添加
+                images_soup = BeautifulSoup(target_images_content, 'html.parser')
+                for img in images_soup.find_all('img'):
+                    container.append(img)
+            
+            result = str(container).replace('<div>', '').replace('</div>', '')
+            logger.info(f"内容合并完成，最终长度: {len(result)} 字符")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"合并内容时发生错误: {e}")
+            # 如果合并失败，返回源内容 + 图片
+            return source_content + '\n\n' + target_images_content
+    
+    def _show_copy_preview_with_description(self, original_content, final_content, source_url):
+        """显示保留描述的复制内容预览信息"""
+        logger.info("=== 内容复制预览（保留描述） ===")
+        
+        # 获取图片信息
+        original_images = self.content_processor.get_image_info(original_content)
+        final_images = self.content_processor.get_image_info(final_content)
+        
+        logger.info(f"源URL: {source_url}")
+        logger.info(f"原始文章图片数量: {len(original_images)}")
+        logger.info(f"最终内容图片数量: {len(final_images)}")
+        
+        if final_images:
+            logger.info("保留的图片:")
+            for img in final_images:
+                logger.info(f"  - {img['src']} (alt: {img['alt']})")
+        
+        # 计算文字变化
+        from bs4 import BeautifulSoup
+        original_soup = BeautifulSoup(original_content, 'html.parser')
+        final_soup = BeautifulSoup(final_content, 'html.parser')
+        
+        original_text = original_soup.get_text(strip=True)
+        final_text = final_soup.get_text(strip=True)
+        
+        logger.info(f"原始文字长度: {len(original_text)} 字符")
+        logger.info(f"最终文字长度: {len(final_text)} 字符")
+        logger.info(f"文字变化: {len(final_text) - len(original_text)} 字符")
+        logger.info("注意: 最终内容包含原文章描述 + 源URL内容 + 原文章图片")
     
     def process_multiple_configs(self, url_configs, dry_run=False):
         """批量处理多种类型的URL配置"""

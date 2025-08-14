@@ -207,67 +207,132 @@ class URLContentExtractor:
         # 保留重要的HTML标签
         allowed_tags = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'br', 'strong', 'b', 'em', 'i', 'u', 'ul', 'ol', 'li', 'blockquote', 'div', 'span']
         
-        # 获取所有文本内容，保留基本结构
-        cleaned_parts = []
-        
-        # 递归处理所有元素
-        def process_element(elem):
+        # 直接保留HTML结构，只清理不需要的标签
+        def clean_element(elem):
+            """递归清理元素，保留允许的标签结构"""
+            if elem.name is None:  # 文本节点
+                return str(elem)
+            
             if elem.name in allowed_tags:
-                # 对于允许的标签，保留其结构
-                if elem.name in ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                    # 段落和标题标签
-                    text_content = elem.get_text(strip=True)
-                    if text_content:
-                        if elem.name.startswith('h'):
-                            cleaned_parts.append(f"<{elem.name}>{text_content}</{elem.name}>")
-                        else:
-                            cleaned_parts.append(f"<p>{text_content}</p>")
-                elif elem.name in ['ul', 'ol']:
-                    # 列表处理
-                    list_items = []
-                    for li in elem.find_all('li'):
-                        li_text = li.get_text(strip=True)
-                        if li_text:
-                            list_items.append(f"<li>{li_text}</li>")
-                    if list_items:
-                        list_content = ''.join(list_items)
-                        cleaned_parts.append(f"<{elem.name}>{list_content}</{elem.name}>")
-                elif elem.name == 'blockquote':
-                    # 引用处理
-                    quote_text = elem.get_text(strip=True)
-                    if quote_text:
-                        cleaned_parts.append(f"<blockquote>{quote_text}</blockquote>")
-                else:
-                    # 其他标签，提取文本内容
-                    text_content = elem.get_text(strip=True)
-                    if text_content:
-                        cleaned_parts.append(f"<p>{text_content}</p>")
-            elif elem.name is None:  # 文本节点
-                text = str(elem).strip()
-                if text and len(text) > 10:  # 只保留有意义的文本
-                    cleaned_parts.append(f"<p>{text}</p>")
+                # 保留允许的标签
+                cleaned_children = []
+                for child in elem.children:
+                    cleaned_child = clean_element(child)
+                    if cleaned_child and cleaned_child.strip():
+                        cleaned_children.append(cleaned_child)
+                
+                if cleaned_children or elem.name in ['br']:  # br标签即使没有子元素也保留
+                    children_html = ''.join(cleaned_children)
+                    if elem.name == 'br':
+                        return '<br>'
+                    elif children_html.strip():
+                        return f"<{elem.name}>{children_html}</{elem.name}>"
+                return ""
+            else:
+                # 不允许的标签，提取其内容
+                cleaned_children = []
+                for child in elem.children:
+                    cleaned_child = clean_element(child)
+                    if cleaned_child and cleaned_child.strip():
+                        cleaned_children.append(cleaned_child)
+                return ''.join(cleaned_children)
         
-        # 处理所有直接子元素
+        # 清理整个内容
+        cleaned_parts = []
         for child in content_copy.children:
-            if hasattr(child, 'name'):
-                process_element(child)
+            cleaned_child = clean_element(child)
+            if cleaned_child and cleaned_child.strip():
+                cleaned_parts.append(cleaned_child.strip())
         
-        # 如果没有提取到内容，尝试直接获取所有段落
+        # 如果没有提取到内容，尝试备用方法
         if not cleaned_parts:
             logger.warning("标准清理方法没有提取到内容，尝试直接提取段落")
-            for p in content_copy.find_all(['p', 'div']):
-                text = p.get_text(strip=True)
+            for elem in content_copy.find_all(['p', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+                text = elem.get_text(strip=True)
                 if text and len(text) > 20:
-                    cleaned_parts.append(f"<p>{text}</p>")
+                    if elem.name.startswith('h'):
+                        cleaned_parts.append(f"<{elem.name}>{text}</{elem.name}>")
+                    else:
+                        # 对于长文本，尝试智能分段
+                        formatted_text = self._smart_paragraph_split(text)
+                        cleaned_parts.append(formatted_text)
         
         # 合并所有清理后的内容
         cleaned_html = '\n\n'.join(cleaned_parts)
         
         # 进一步清理
         cleaned_html = re.sub(r'<p>\s*</p>', '', cleaned_html)  # 移除空段落
-        cleaned_html = re.sub(r'\n\s*\n\s*\n', '\n\n', cleaned_html)  # 规范化换行
+        cleaned_html = re.sub(r'<([^>]+)>\s*</\1>', '', cleaned_html)  # 移除其他空标签
+        cleaned_html = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned_html)  # 规范化换行
         
         return cleaned_html.strip()
+    
+    def _smart_paragraph_split(self, text: str) -> str:
+        """
+        智能分段：根据内容特点自动分段
+        """
+        try:
+            # 检查是否是名字列表格式，先分离出独立的名字条目
+            # 按大写字母分割文本，每个大写字母开头的部分可能是一个名字条目
+            parts = re.split(r'(?=[A-Z][a-z]+[A-Z])', text)
+            
+            # 过滤出看起来像名字条目的部分
+            name_entries = []
+            for part in parts:
+                part = part.strip()
+                if len(part) > 10 and re.match(r'^[A-Z][a-z]+[A-Z]', part):
+                    name_entries.append(part)
+            
+            if len(name_entries) > 3:  # 如果找到多个名字条目
+                logger.info(f"检测到名字列表格式，找到 {len(name_entries)} 个条目")
+                formatted_parts = []
+                for entry in name_entries:
+                    # 提取名字（第一个单词）
+                    match = re.match(r'^([A-Z][a-z]+)(.*)$', entry)
+                    if match:
+                        name = match.group(1)
+                        description = match.group(2).strip()
+                        # 清理描述文本
+                        if description:
+                            formatted_parts.append(f"<p><strong>{name}</strong> - {description}</p>")
+                        else:
+                            formatted_parts.append(f"<p><strong>{name}</strong></p>")
+                
+                if formatted_parts:
+                    return '\n\n'.join(formatted_parts)
+            else:
+                # 普通文本，尝试按句子分段
+                sentences = re.split(r'[.!?]+\s+', text)
+                if len(sentences) > 3:
+                    # 每2-3句组成一段
+                    paragraphs = []
+                    current_paragraph = []
+                    for sentence in sentences:
+                        current_paragraph.append(sentence.strip())
+                        if len(current_paragraph) >= 2:
+                            if current_paragraph[-1]:  # 确保不是空字符串
+                                paragraph_text = '. '.join(current_paragraph).strip()
+                                if not paragraph_text.endswith('.'):
+                                    paragraph_text += '.'
+                                paragraphs.append(f"<p>{paragraph_text}</p>")
+                            current_paragraph = []
+                    
+                    # 处理剩余的句子
+                    if current_paragraph:
+                        paragraph_text = '. '.join(current_paragraph).strip()
+                        if paragraph_text and not paragraph_text.endswith('.'):
+                            paragraph_text += '.'
+                        if paragraph_text:
+                            paragraphs.append(f"<p>{paragraph_text}</p>")
+                    
+                    return '\n\n'.join(paragraphs)
+                else:
+                    # 文本太短，直接作为一个段落
+                    return f"<p>{text}</p>"
+                    
+        except Exception as e:
+            logger.error(f"智能分段时发生错误: {e}")
+            return f"<p>{text}</p>"
     
     def extract_and_format(self, url: str, start_keyword: str = None) -> Optional[str]:
         """
@@ -293,9 +358,8 @@ class URLContentExtractor:
                 logger.warning(f"未找到关键词 '{start_keyword}'，使用完整内容")
                 content = result['content']
         
-        # 添加标题
-        formatted_content = f"<h1>{result['title']}</h1>\n\n"
-        formatted_content += content
+        # 不添加源URL的标题，直接使用内容
+        formatted_content = content
         
         # 添加来源信息
         formatted_content += f"\n\n<p><em>原文来源: <a href=\"{url}\" target=\"_blank\">{result['domain']}</a></em></p>"
@@ -304,14 +368,14 @@ class URLContentExtractor:
     
     def _extract_from_keyword(self, content: str, keyword: str) -> str:
         """
-        从指定关键词开始提取内容
+        从指定关键词开始提取内容，保留HTML格式
         
         Args:
             content: 原始HTML内容
             keyword: 起始关键词
             
         Returns:
-            从关键词开始的内容，如果未找到关键词返回空字符串
+            从关键词开始的内容，保留原始HTML格式
         """
         try:
             from bs4 import BeautifulSoup
@@ -321,86 +385,82 @@ class URLContentExtractor:
             
             # 查找包含关键词的元素
             keyword_element = None
-            keyword_position = -1
             
             # 遍历所有元素，查找包含关键词的元素
             for element in soup.find_all():
                 element_text = element.get_text()
                 if keyword in element_text:
                     keyword_element = element
-                    keyword_position = element_text.find(keyword)
                     logger.info(f"在 {element.name} 元素中找到关键词 '{keyword}'")
                     break
             
             if not keyword_element:
-                # 如果在元素中没找到，尝试在纯文本中查找
-                full_text = soup.get_text()
-                if keyword in full_text:
-                    logger.info(f"在文本中找到关键词 '{keyword}'，但无法精确定位元素")
-                    # 简单的文本截取
-                    keyword_pos = full_text.find(keyword)
-                    remaining_text = full_text[keyword_pos:]
-                    return f"<p>{remaining_text}</p>"
-                else:
-                    logger.warning(f"未找到关键词 '{keyword}'")
-                    return ""
-            
-            # 从找到关键词的元素开始收集内容
-            collected_content = []
-            found_start = False
+                logger.warning(f"未找到关键词 '{keyword}'")
+                return ""
             
             # 获取关键词元素的父容器
             container = keyword_element.parent
+            while container and container.name in ['span', 'strong', 'em', 'b', 'i']:
+                container = container.parent
+            
             if not container:
                 container = soup
             
-            # 从容器中的所有子元素开始处理
-            for element in container.find_all():
-                element_text = element.get_text()
-                
-                # 如果这个元素包含关键词，开始收集
-                if keyword in element_text and not found_start:
-                    found_start = True
-                    
-                    # 处理包含关键词的这个元素
-                    if keyword_position >= 0:
-                        # 截取从关键词开始的文本
-                        before_keyword = element_text[:element_text.find(keyword)]
-                        from_keyword = element_text[element_text.find(keyword):]
-                        
-                        # 重建元素，只保留从关键词开始的部分
-                        if element.name in ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                            collected_content.append(f"<{element.name}>{from_keyword}</{element.name}>")
-                        else:
-                            collected_content.append(f"<p>{from_keyword}</p>")
-                    else:
-                        # 保留整个元素
-                        if element.name in ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                            collected_content.append(f"<{element.name}>{element_text}</{element.name}>")
-                        else:
-                            collected_content.append(f"<p>{element_text}</p>")
-                
-                # 如果已经开始收集且这不是包含关键词的元素，继续收集后续元素
-                elif found_start and element != keyword_element:
-                    if element.name in ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-                        collected_content.append(f"<{element.name}>{element_text}</{element.name}>")
-                    elif element.name in ['ul', 'ol']:
-                        # 处理列表
-                        list_items = []
-                        for li in element.find_all('li'):
-                            li_text = li.get_text(strip=True)
-                            if li_text:
-                                list_items.append(f"<li>{li_text}</li>")
-                        if list_items:
-                            list_content = ''.join(list_items)
-                            collected_content.append(f"<{element.name}>{list_content}</{element.name}>")
-                    elif len(element_text.strip()) > 10:  # 忽略很短的文本
-                        collected_content.append(f"<p>{element_text}</p>")
+            # 获取容器中的所有子元素
+            all_elements = list(container.children)
             
-            result_content = '\n\n'.join(collected_content)
+            # 找到包含关键词的元素在容器中的位置
+            keyword_index = -1
+            for i, child in enumerate(all_elements):
+                if hasattr(child, 'get_text') and keyword in child.get_text():
+                    keyword_index = i
+                    break
+            
+            if keyword_index == -1:
+                logger.warning(f"无法在容器中定位关键词元素")
+                return ""
+            
+            # 从关键词元素开始收集所有后续内容
+            collected_elements = []
+            
+            # 处理包含关键词的元素
+            keyword_elem = all_elements[keyword_index]
+            if hasattr(keyword_elem, 'get_text'):
+                elem_text = keyword_elem.get_text()
+                keyword_pos = elem_text.find(keyword)
+                
+                if keyword_pos >= 0:
+                    # 获取从关键词开始的文本
+                    from_keyword_text = elem_text[keyword_pos:]
+                    
+                    # 对从关键词开始的文本进行智能分段
+                    formatted_text = self._smart_paragraph_split(from_keyword_text)
+                    collected_elements.append(formatted_text)
+                else:
+                    collected_elements.append(str(keyword_elem))
+            
+            # 收集关键词元素之后的所有元素
+            for i in range(keyword_index + 1, len(all_elements)):
+                elem = all_elements[i]
+                if hasattr(elem, 'name') and elem.name:
+                    # 保留HTML元素的完整结构
+                    collected_elements.append(str(elem))
+                elif hasattr(elem, 'strip') and elem.strip():
+                    # 处理文本节点
+                    text_content = str(elem).strip()
+                    if len(text_content) > 10:
+                        collected_elements.append(f"<p>{text_content}</p>")
+            
+            # 合并所有元素
+            result_content = '\n\n'.join(collected_elements)
+            
+            # 清理格式
+            result_content = re.sub(r'\n\s*\n\s*\n+', '\n\n', result_content)
+            result_content = re.sub(r'<p>\s*</p>', '', result_content)
+            
             logger.info(f"从关键词 '{keyword}' 开始提取了 {len(result_content)} 字符的内容")
             
-            return result_content
+            return result_content.strip()
             
         except Exception as e:
             logger.error(f"从关键词提取内容时发生错误: {e}")
